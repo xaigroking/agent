@@ -1,699 +1,306 @@
-```md
-# AI Agent 项目图标资产自动生成规范（试行版）
+# AI Agent 项目图标资产规范
 
-**文档名称：** AI Agent Icon Asset Generation Standard  
-**版本：** v0.1 Trial  
-**状态：** 试行  
-**适用范围：** Web / PWA / iOS / Android / Windows / macOS 项目  
-**目标：** 建立 AI Agent 自动生成、管理和部署项目视觉资产的统一流程
+| 项 | 内容 |
+|---|---|
+| 版本 | v1.0（标准版，替代 v0.1 Trial，勘误见附录 A） |
+| 适用 | 新项目、旧项目；Web / PWA / iOS / Android / Windows / macOS |
+| 受众 | 施工的 Agent 与人 |
+| 配套工具 | 本仓库 `tools/icons/`：`generate-icons.mjs`（生成）、`validate-icons.mjs`（校验，零依赖） |
 
----
+**加载方式：按需加载，不要放进常驻上下文。** 项目的 `AGENTS.md` / `CLAUDE.md` 只加一行：
 
-# 1. 背景与目的
-
-随着 AI Agent 自动开发项目数量增加，每个项目需要具备独立、完整、专业的视觉识别资产。
-
-传统开发流程中，favicon、App Icon、系统图标通常由人工设计师后期补充，容易出现：
-
-- 项目缺少 favicon
-- 使用默认模板图标
-- Web 与移动端图标不一致
-- 不同平台尺寸缺失
-- 发布前临时补图
-
-因此，本规范要求 AI Agent 在项目开发过程中主动完成项目图标资产设计、生成、转换和集成。
-
----
-
-# 2. 核心原则
-
-## 2.1 一个项目，一个统一视觉源
-
-所有平台图标必须来源于同一个 Master Icon。
-
-统一关系：
-
-```
-
-Master Icon (1024x1024)
-
-```
-    |
-    |
-    +---- Web favicon
-    |
-    +---- PWA Icon
-    |
-    +---- iOS App Icon
-    |
-    +---- Android Icon
-    |
-    +---- Windows Icon
-    |
-    +---- macOS Icon
-```
-
-```
-
-禁止：
-
-- 不同平台单独设计不同 Logo
-- 使用随机模板
-- 使用无关图片
-- 使用默认系统图标
-
----
-
-# 3. Agent 必须执行的任务
-
-每个项目在进入 Beta 阶段之前，Agent 必须完成：
-
-```
-
-[ ] 项目图标设计分析
-
-[ ] Icon Design Brief 文档
-
-[ ] Master Icon 生成
-
-[ ] Web favicon 生成
-
-[ ] PWA 图标生成
-
-[ ] iOS 图标生成
-
-[ ] Android 图标生成
-
-[ ] Windows 图标生成
-
-[ ] macOS 图标生成
-
-[ ] 项目配置文件更新
-
-[ ] 自动检查通过
-
+```markdown
+- 涉及图标、favicon、App Icon 的任务，先读 docs/standards/icon-assets.md 并按其执行；完成前运行 `node tools/icons/validate-icons.mjs`。
 ```
 
 ---
 
-# 4. Icon Design Brief
+## 1. 原则
 
-Agent 必须在项目中生成：
+1. **一个来源**：所有平台图标由同一个源文件生成，禁止按平台分别设计。
+2. **按平台档位生成**：只生成项目实际发布的平台，不为纯 Web 项目生成 iOS / Android / 桌面图标。
+3. **工具生成，工具校验**：尺寸、格式、透明度、引用由脚本生成和检查，不靠 Agent 自述"已完成"。
+4. **旧项目不覆盖品牌**：已有品牌图标时以它为源，不得擅自重新设计。
+
+---
+
+## 2. 平台档位（profiles）
+
+| profile | 何时启用 | 产物 |
+|---|---|---|
+| `web` | 任何以网站或 PWA 形式发布的项目 | favicon、Apple Touch Icon、PWA 图标、manifest |
+| `ios` | 有 iOS 原生工程（Swift、React Native、Flutter、Capacitor 等） | `AppIcon.appiconset`（单尺寸 1024） |
+| `android` | 有 Android 原生工程 | `mipmap-*` 传统图标 + 自适应图标 + 主题单色图标 |
+| `windows` | 发布 Windows 桌面程序 | `app.ico`（16–256） |
+| `macos` | 发布 macOS 桌面程序 | `app.icns` |
+
+---
+
+## 3. 源文件
+
+### 3.1 位置与格式
 
 ```
+branding/
+├── icon.svg               # 首选：矢量源
+├── icon-1024.png          # 备选：位图源（旧项目已有品牌图、人工设计稿、生图结果）
+├── favicon.svg            # 可选：小尺寸专用简化版（仅用于 favicon 与 Windows ico）
+├── icon-brief.md          # 设计说明
+├── icon.config.json       # 配置
+└── icon.hash              # 生成器写入的指纹，勿手改
+```
 
-/docs/icon-design-brief.md
+| 源 | 要求（校验器强制） |
+|---|---|
+| SVG | 有 `viewBox` 且为正方形；不得内嵌位图（`<image>`）；不得含 `<text>`、`<script>` |
+| PNG | 正方形，≥ 1024×1024 |
 
-````
+### 3.2 设计要求
 
-内容至少包括：
+源文件是**符号层**：透明背景，背景色由配置的 `background` 统一提供（各平台需要不透明底时由生成器合成）。
 
-```md
+* 无文字、无细线：笔画宽度 ≥ 画布的 1/16，16×16 下仍可辨认
+* 颜色 ≤ 3 种，与 `background` 高对比
+* 主体居中，约占画布 80%
+* 透明背景的 favicon 需在浅色和深色标签栏上都可见；做不到时提供 `favicon.svg`（自带底色），或在 SVG 内用 `@media (prefers-color-scheme: dark)` 切换颜色
+* 禁止：第三方品牌标志、知名产品图标的仿制、受版权保护的角色、来源不明的图片
+
+### 3.3 设计说明 `branding/icon-brief.md`
+
+```markdown
 项目名称：
-
-项目类型：
-
-核心功能：
-
+一句话描述：
 目标用户：
-
-品牌关键词：
-
-视觉方向：
-
-推荐颜色：
-
-禁止元素：
-
-生成 Prompt：
-````
-
-示例：
-
-```md
-项目名称：
-
-AI Knowledge Assistant
-
-
-项目类型：
-
-AI SaaS Application
-
-
-关键词：
-
-- Intelligence
-- Search
-- Knowledge
-
-
-视觉方向：
-
-Modern minimalist technology icon.
-
-
-要求：
-
-- 无文字
-- 小尺寸可识别
-- 高对比度
-- 专业 SaaS 风格
+关键词（3 个以内）：
+图形方案：（例：圆环 + 十字，表示"添加知识"）
+配色：符号 #38BDF8 / #F8FAFC，背景 #0F172A
+来源：Agent 绘制 SVG / 生图（模型与提示词）/ 人工设计稿
+确认人与日期：
 ```
 
 ---
 
-# 5. 图标生成方式
-
-## 5.1 推荐流程
-
-Agent 不直接手工绘制所有尺寸。
-
-推荐：
-
-```
-Agent
-
- ↓
-
-生成设计描述
-
- ↓
-
-调用 Image Generation API
-
- ↓
-
-生成 1024x1024 Master Icon
-
- ↓
-
-自动转换全部尺寸
-
- ↓
-
-写入项目
-```
-
----
-
-# 6. Master Icon 标准
-
-必须生成：
-
-```
-master-icon.png
-```
-
-规格：
-
-| 项目 | 要求        |
-| -- | --------- |
-| 尺寸 | 1024x1024 |
-| 格式 | PNG       |
-| 背景 | 支持透明      |
-| 文字 | 默认禁止      |
-| 质量 | 高清        |
-| 用途 | 所有平台源文件   |
-
-要求：
-
-* 在 32x32 favicon 尺寸下仍可识别
-* 避免过度复杂
-* 避免细小文字
-* 避免版权元素
-
----
-
-# 7. 项目目录规范
-
-所有项目必须包含：
-
-```
-assets/
-
-└── icons/
-
-    ├── master-icon.png
-
-    ├── favicon.ico
-    ├── favicon.svg
-    ├── favicon-16.png
-    ├── favicon-32.png
-
-    ├── apple-touch-icon.png
-
-    ├── android/
-    │
-    │   ├── android-192.png
-    │   └── android-512.png
-
-    ├── ios/
-    │
-    │   └── AppIcon.appiconset/
-
-    ├── android-native/
-    │
-    │   └── mipmap/
-
-    ├── windows/
-    │
-    │   └── app.ico
-
-    └── macos/
-        │
-        └── app.icns
-```
-
----
-
-# 8. Web 项目要求
-
-必须包含：
-
-## favicon
-
-```
-favicon.ico
-favicon.svg
-favicon-16.png
-favicon-32.png
-```
-
-## Apple Touch Icon
-
-```
-apple-touch-icon.png
-
-尺寸：
-
-180x180
-```
-
-## Android PWA
-
-```
-android-192.png
-
-android-512.png
-```
-
----
-
-# 9. Web 自动配置要求
-
-Agent 必须自动检查 HTML：
-
-```html
-<link rel="icon"
-href="/assets/icons/favicon.ico">
-
-<link rel="apple-touch-icon"
-href="/assets/icons/apple-touch-icon.png">
-```
-
-并检查：
-
-```
-manifest.json
-```
-
-包含：
+## 4. 配置 `branding/icon.config.json`
 
 ```json
 {
- "icons":[
-   {
-    "src":
-    "/assets/icons/android/android-192.png",
-    "sizes":"192x192"
-   },
-   {
-    "src":
-    "/assets/icons/android/android-512.png",
-    "sizes":"512x512"
-   }
- ]
+  "name": "Demo App",
+  "status": "draft",
+  "source": "branding/icon.svg",
+  "background": "#0F172A",
+  "profiles": ["web", "ios", "android"],
+  "out": {
+    "web": "public",
+    "ios": "ios/App/App/Assets.xcassets/AppIcon.appiconset",
+    "android": "android/app/src/main/res"
+  },
+  "web": {
+    "basePath": "/",
+    "manifest": "manifest.webmanifest",
+    "htmlFiles": ["index.html"]
+  }
 }
 ```
 
----
-
-# 10. iOS 图标规范
-
-必须支持：
-
-```
-1024x1024 App Store Icon
-```
-
-并生成：
-
-```
-20x20
-
-29x29
-
-40x40
-
-60x60
-
-76x76
-
-83.5x83.5
-
-1024x1024
-```
-
-目录：
-
-```
-ios/AppIcon.appiconset/
-```
-
-必须包含：
-
-```
-Contents.json
-```
+| 字段 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `name` | 是 | — | 新建 manifest 时使用 |
+| `status` | 否 | `draft` | `placeholder`（占位）/ `draft`（未经人工确认）/ `approved` |
+| `source` | 否 | `branding/icon.svg` | 也可为 `branding/icon-1024.png` |
+| `faviconSource` | 否 | 同 `source` | favicon 与 Windows ico 专用源 |
+| `background` | 否 | `#FFFFFF` | `#RRGGBB`，不透明平台的底色 |
+| `profiles` | 否 | `["web"]` | 见第 2 节 |
+| `out.web` | 否 | `public` | 网站根目录（部署后对应 `/`） |
+| `out.ios` / `out.android` | 否 | `branding/generated/...` | 指向原生工程的资源目录 |
+| `out.windows` / `out.macos` | 否 | `branding/generated/...` | 输出文件路径 |
+| `web.basePath` | 否 | `/` | 站点部署在子路径时修改，如 `/app/` |
+| `web.manifest` | 否 | `manifest.webmanifest` | 已存在则只替换 `icons` 字段 |
+| `web.htmlFiles` | 否 | `[]` | 需要校验 `<head>` 引用的 HTML 文件 |
+| `scale.opaque` / `scale.maskable` / `scale.macos` | 否 | 0.8 / 0.6 / 0.7 | 符号在不同底板上的占比 |
 
 ---
 
-# 11. Android 图标规范
+## 5. 产物清单
 
-必须支持：
+生成器与校验器使用同一份清单（`tools/icons/icons-lib.mjs`）。
 
-普通 Icon：
-
-```
-mdpi
-
-hdpi
-
-xhdpi
-
-xxhdpi
-
-xxxhdpi
-```
-
-Adaptive Icon：
-
-```
-foreground.png
-
-background.png
-```
+| profile | 文件 | 规格 |
+|---|---|---|
+| web | `favicon.ico` | 内含 16、32、48 |
+| web | `icon.svg` | 源为 SVG 时复制 |
+| web | `apple-touch-icon.png` | 180×180，**不透明** |
+| web | `icon-192.png`、`icon-512.png` | 透明背景，`purpose: any` |
+| web | `icon-maskable-512.png` | 512×512，**不透明**，符号在中心 80% 安全区内 |
+| web | `manifest.webmanifest` | `icons` 含以上三项 |
+| ios | `AppIcon.appiconset/icon-1024.png` + `Contents.json` | 1024×1024，**不透明**（App Store 拒绝透明图标）；单尺寸，Xcode 14+ 自动派生其余尺寸 |
+| android | `mipmap-{mdpi…xxxhdpi}/ic_launcher.png`、`ic_launcher_round.png` | 48dp（48–192px），旧系统使用 |
+| android | `mipmap-*/ic_launcher_foreground.png`、`ic_launcher_monochrome.png` | 108dp（108–432px），符号在 66dp 安全区内；单色版用于 Android 13 主题图标 |
+| android | `mipmap-anydpi-v26/ic_launcher.xml`、`ic_launcher_round.xml`、`values/ic_launcher_background.xml` | 自适应图标定义 + 背景色 |
+| windows | `app.ico` | 16、24、32、48、64、128、256 |
+| macos | `app.icns` | 16–1024；macOS 不自动加圆角，生成器在 1024 画布内绘制 824 圆角底板 |
 
 ---
 
-# 12. Windows 图标规范
+## 6. 施工流程
 
-生成：
+### 6.1 准备（每个项目一次）
 
+```bash
+# 从本仓库复制 tools/icons/ 到项目，然后：
+npm --prefix tools/icons install          # 依赖 sharp、png2icons，需要 Node ≥ 20
+echo "tools/icons/node_modules/" >> .gitignore
 ```
-app.ico
-```
 
-支持尺寸：
+生成的图标**提交进仓库**，CI 只运行零依赖的校验器，不需要安装图像库。
 
-```
-16x16
+### 6.2 新项目
 
-32x32
+1. 确定 profiles（第 2 节）和 `out` 路径（第 7 节）。
+2. 写 `branding/icon-brief.md`。
+3. 产出源文件（第 8 节），写 `branding/icon.config.json`，`status: "draft"`。
+4. `node tools/icons/generate-icons.mjs`
+5. 接入平台（第 7 节）：Web 的 `<head>` / 框架配置等。
+6. `node tools/icons/validate-icons.mjs` 通过。
+7. 把 `public/icon-512.png`、`favicon.ico` 等交给人确认；确认后改为 `approved`，重新生成并校验。
 
-48x48
+### 6.3 旧项目
 
-64x64
-
-128x128
-
-256x256
-```
+1. **盘点**：查找现有图标（`favicon.*`、`apple-touch-icon*`、`manifest*`、`AppIcon.appiconset`、`mipmap-*`、`*.ico`、`*.icns`），记录在 `icon-brief.md`。
+2. **定源**：
+   * 有品牌图标（非框架模板默认图）→ 用它的矢量稿或 ≥1024 位图作源，`status: "approved"`，**不得重新设计**
+   * 只有模板默认图标（Vite、React、Next.js、Flutter、Android Studio 默认图标等）→ 按新项目流程
+   * 只有低于 1024 的位图 → 不放大使用；报告需要源文件（`status: "placeholder"` 暂用）
+3. **先生成到默认目录**：`out` 保持 `branding/generated/...` 默认值，检查结果后再改为工程真实目录。
+4. **清理冲突文件**，否则构建报错或继续使用旧图：
+   * Android：删除 `mipmap-*/ic_launcher*.webp`（与新的 `.png` 同名资源冲突）
+   * iOS：删除 `AppIcon.appiconset` 中旧的多尺寸 PNG
+   * Web：删除模板图标（`vite.svg`、`logo192.png`、`logo512.png`、Next.js 的 `app/favicon.ico` 等）并移除其引用
+5. 生成 → 接入 → 校验，同新项目第 4–6 步。用 `git diff --stat` 确认只改动了图标相关文件。
 
 ---
 
-# 13. macOS 图标规范
+## 7. 平台接入
 
-生成：
+### 7.1 Web `<head>`
 
+```html
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 ```
-app.icns
-```
 
-支持：
+源为 PNG 时去掉 `icon.svg` 一行；部署在子路径时把 `/` 换成 `basePath`。
 
-```
-16
+### 7.2 常见工程的 `out` 设置
 
-32
+| 工程 | `out.web` | 接入方式 |
+|---|---|---|
+| 静态站点、Vite、Create React App、Nuxt、Astro | `public` | 改 `index.html`（Nuxt 用 `nuxt.config` 的 `app.head`），并配置 `web.htmlFiles` |
+| SvelteKit | `static` | 改 `src/app.html` |
+| Next.js（App Router） | `public` | 删除默认 `app/favicon.ico`；在根 `layout` 的 `metadata` 中设置 `icons` 和 `manifest`；`web.htmlFiles` 留空 |
+| Django / Flask / Rails 等 | 静态资源根目录 | 改基础模板；确保 `/favicon.ico` 在站点根可访问 |
 
-128
+| 原生工程 | `out.ios` | `out.android` |
+|---|---|---|
+| Xcode / Swift | `<App>/Assets.xcassets/AppIcon.appiconset` | — |
+| Android Studio | — | `app/src/main/res` |
+| React Native | `ios/<App>/Images.xcassets/AppIcon.appiconset` | `android/app/src/main/res` |
+| Flutter | `ios/Runner/Assets.xcassets/AppIcon.appiconset` | `android/app/src/main/res` |
+| Capacitor | `ios/App/App/Assets.xcassets/AppIcon.appiconset` | `android/app/src/main/res` |
 
-256
+Android 的 `AndroidManifest.xml` 需为 `android:icon="@mipmap/ic_launcher"`、`android:roundIcon="@mipmap/ic_launcher_round"`（模板默认即如此）。
 
-512
+| 桌面工程 | 做法 |
+|---|---|
+| Electron（electron-builder） | `out.windows: "build/icon.ico"`，`out.macos: "build/icon.icns"` |
+| Tauri | 用 `tauri icon branding/icon-1024.png`（或 SVG 源）生成到 `src-tauri/icons/`；本工具只负责 `web` 部分 |
+| 其他 | 将 `out.windows` / `out.macos` 指向打包配置引用的路径 |
 
-1024
-```
+Expo 托管工程（无 `ios/`、`android/` 目录）：在 `app.json` 的 `icon`、`android.adaptiveIcon` 中引用生成的 PNG，本工具的 profiles 只保留 `web`。
 
 ---
 
-# 14. 自动转换工具要求
+## 8. 源文件的产出方式
 
-推荐使用：
-
-* ImageMagick
-* Sharp
-* Pillow
-* png2icons
-* favicon generator
-
-转换流程：
-
-```
-master-icon.png
-
-        ↓
-
-image processor
-
-        ↓
-
-platform assets
-```
+| 方式 | 适用 | 规则 |
+|---|---|---|
+| **A. Agent 直接编写 SVG（默认）** | 新项目、无设计师 | 几何图形，符合 3.2 节；可重复、可审阅、可直接做 `favicon.svg` |
+| B. 生图模型 | 需要更有表现力的图形 | 生成 3–4 个候选 → 人工选定 → 存为 `icon-1024.png`；把模型与提示词写进 brief。注意：生图结果常有渐变、细节过多、伪文字、非透明背景，小尺寸可读性差；用于注册商标的图标应由人工设计 |
+| C. 人工设计稿 | 已有品牌 | 优先要矢量稿 |
+| D. 占位 | 以上都暂时做不到 | 简单几何图形或首字母色块，`status: "placeholder"`；发布校验会失败，必须替换 |
 
 ---
 
-# 15. CI/CD 检查
+## 9. 校验与 CI
 
-项目发布前必须执行：
-
-```
-icon-validator
-```
-
-检查：
-
-```
-✓ Master Icon 存在
-
-✓ favicon 存在
-
-✓ Web 配置正确
-
-✓ PWA 配置正确
-
-✓ iOS 图标完整
-
-✓ Android 图标完整
-
-✓ Windows 图标完整
-
-✓ macOS 图标完整
-
-✓ 无默认占位图
+```bash
+node tools/icons/validate-icons.mjs            # 开发阶段：placeholder 仅警告
+node tools/icons/validate-icons.mjs --release  # 发布前：placeholder 视为失败
 ```
 
-失败示例：
+校验内容：配置合法；源文件规格；产物与源同步（`icon.hash`）；每个产物存在、尺寸正确、需要不透明的平台无透明通道、ico / icns 含所需尺寸；manifest 条目完整；HTML 含 `icon` / `apple-touch-icon` / `manifest` 引用；未引用模板默认图标。
 
+| 阶段 | 要求 |
+|---|---|
+| 开发中 | 允许 `placeholder`、`draft` |
+| 合并到主分支（CI） | `validate-icons.mjs` 通过 |
+| Beta / 发布 | `validate-icons.mjs --release` 通过；`draft` 会提示未经人工确认 |
+
+GitHub Actions 示例：
+
+```yaml
+- uses: actions/setup-node@v4
+  with:
+    node-version: 20
+- run: node tools/icons/validate-icons.mjs .            # PR
+- run: node tools/icons/validate-icons.mjs . --release  # 发布工作流
 ```
-BUILD FAILED
 
-Reason:
-
-Missing android 512 icon
-```
+校验器不判断图标是否好看，也不检查真实设备上的显示效果。发布前至少人工查看一次：浏览器标签（浅色 / 深色）、手机"添加到主屏幕"、Android 圆形与方形启动器、App Store / 桌面 Dock 中的显示。
 
 ---
 
-# 16. Agent 完成声明标准
+## 10. 完成标准
 
-Agent 不得在以下情况宣布项目完成：
-
-```
-- favicon 缺失
-- 使用默认图标
-- 平台图标缺少
-- manifest 未配置
-- App Icon 未生成
-```
-
-完成标准：
+Agent 报告完成时必须包含：
 
 ```
-Icon Asset Pipeline Completed.
-
-All required platform icons generated.
-
-Validation Passed.
+profiles：web, ios, android
+源文件：branding/icon.svg（方式 A，status: draft）
+生成：34 个文件
+校验：validate-icons.mjs 通过（--release 未运行 / 通过）
+待人工：确认图标设计；真机查看
 ```
+
+以下任一情况不得报告完成：校验失败；`status` 为 `placeholder` 却未在报告中标明；旧项目的品牌图标被替换而没有人工确认。
 
 ---
 
-# 17. 安全与版权要求
+## 附录 A：v0.1 Trial 勘误
 
-禁止：
+| # | v0.1 内容 | 问题 | v1.0 |
+|---|---|---|---|
+| 1 | 全文包在 ```` ```md ```` 代码块中，内部代码块嵌套错误 | 渲染为一整块代码，结构图错乱 | 正常 Markdown |
+| 2 | 规范部分与"参考分析"部分并存 | 目录（`assets/icons/` vs `public/icons/`）、文件名（`master-icon.png` vs `source-1024.png`、`favicon-16.png` vs `favicon-16x16.png`）互相矛盾 | 单一规范，统一命名 |
+| 3 | 所有项目必须生成六个平台图标 | 纯 Web 项目生成原生图标无意义 | 按 profiles 生成 |
+| 4 | Web 图标放在 `assets/icons/` | 必须位于站点可访问的静态根目录；浏览器默认请求 `/favicon.ico` | `out.web` 指向静态根目录 |
+| 5 | Master Icon "支持透明" | iOS App Icon 不允许透明；Apple Touch Icon 透明区域会变黑 | 符号层透明，不透明平台由生成器合成底色，校验器检查 |
+| 6 | iOS 列出 20/29/40/60/76/83.5 等尺寸 | Xcode 14 起单个 1024 即可 | 单尺寸 `AppIcon.appiconset` |
+| 7 | Android 仅 foreground/background 两张图 | 缺 108dp 层尺寸、安全区、`mipmap-anydpi-v26` 定义、主题单色图标 | 第 5 节完整清单 |
+| 8 | manifest 示例缺 `type`、无 maskable | Android 安装图标被裁切或加白边 | 增加 `icon-maskable-512.png` 与 `purpose: maskable` |
+| 9 | 从 PNG 生成 `favicon.svg` | 位图套 SVG 外壳没有意义 | 仅在源为 SVG 时输出 `icon.svg` |
+| 10 | macOS 只列 icns 尺寸 | macOS 不自动加圆角，直接用方图会显示为方块 | 生成器绘制圆角底板 |
+| 11 | ImageMagick `convert` 示例 | ImageMagick 7 中已弃用；各平台合成规则没有实现 | 提供 `generate-icons.mjs` |
+| 12 | 要求 `icon-validator` 但未定义 | 无法执行 | 提供零依赖 `validate-icons.mjs`，附 CI 用法 |
+| 13 | "Agent 不得宣布完成" | 依赖 Agent 自觉 | 以校验器退出码为准 |
+| 14 | 禁止占位图 vs 失败时生成占位图 | 互相矛盾 | `status: placeholder`，发布校验失败 |
+| 15 | 生图 API 为首选 | 小尺寸可读性差、不可复现、版权与商标风险 | 默认 Agent 编写 SVG，生图需人工选定 |
+| 16 | 未涉及旧项目 | Agent 可能覆盖已有品牌图标；旧文件残留导致构建冲突 | 第 6.3 节 |
+| 17 | 未说明文档如何提供给 Agent | 常驻加载浪费上下文 | 按需加载，`AGENTS.md` 只加一行 |
 
-* 使用第三方品牌 Logo
-* 复制商业产品图标
-* 使用受版权保护角色
-* 使用未经授权图片
+## 附录 B：维护
 
-允许：
-
-* AI 原创设计
-* 抽象图形
-* 几何 Logo
-* 自定义品牌元素
-
----
-
-# 18. 后续扩展方向
-
-未来版本可加入：
-
-* 自动生成 Logo
-* 自动生成品牌色板
-* 自动生成启动页
-* 自动生成 OpenGraph 图片
-* 自动生成 App Store 宣传图
-* 自动生成产品宣传 Banner
-
----
-
-# 文档结束
-
-版本：
-
-v0.1 Trial
-
-维护：
-
-AI Agent Development Infrastructure
-
-```
-```
----
-# 参考分析
-
-
-
-### 1. 要不要做？值不值得？
-**必须做。**  
-- 浏览器标签页、书签、PWA 安装、手机主屏幕、Windows 磁贴、macOS Dock 等都会用到。  
-- 没有图标的项目看起来像半成品。  
-- 人工做一次很容易，但 agent 自动做能保证每个项目都有，且风格统一。
-
-### 2. 生成方式选择：生图 API vs Agent CLI
-| 方式 | 优点 | 缺点 | 推荐度 |
-|------|------|------|--------|
-| **生图 API**（Grok Imagine / Flux / DALL-E / SD 等） | 真正从零根据项目语义生成相关图标，创意好 | 需要 API 权限/额度，偶尔风格不稳定 | **首选** |
-| **纯 CLI**（ImageMagick + 占位图 / SVG） | 零外部依赖，稳定可重复 | 无法从零创造有意义的图标，只能处理已有图或极简几何 | 备选 |
-| **混合**（生图 API 出主图 → CLI 批量缩放转格式） | 质量高 + 可控 + 全尺寸覆盖 | 需要 agent 同时具备生图能力和 ImageMagick | **最推荐** |
-
-**结论**：优先让 agent 调用生图能力生成一张高质量主图（1024×1024 或更大），然后用 ImageMagick（或同类工具）一键生成全套尺寸。纯 CLI 只适合兜底（生成纯色+文字占位）。
-
-### 3. 必须生成的文件清单（2026 年标准最小集）
-把这些写死在文档里：
-
-**必做：**
-- `favicon.ico`（内含 16×16 + 32×32 + 48×48）
-- `apple-touch-icon.png`（180×180，iPhone/iPad 主屏幕）
-- `icon-192.png`（Android / PWA）
-- `icon-512.png`（PWA 安装 & 启动屏）
-- `favicon-32x32.png` / `favicon-16x16.png`（可选但推荐）
-
-**推荐额外：**
-- `icon-maskable-512.png`（Android 自适应安全区）
-- `favicon.svg`（现代浏览器矢量）
-- Windows 相关（如需要 `.ico` 多尺寸或 tile）
-- macOS `.icns`（如果项目涉及原生桌面端）
-
-目录建议统一放到 `public/icons/` 或 `assets/icons/`，并同步更新 `index.html` 的 `<link>` 和 `manifest.webmanifest`。
-
-### 4. 在开发文档中如何规定（可直接复制）
-
-在每个项目的开发文档（或 `AGENTS.md` / `DEVELOPMENT.md`）中增加以下强制章节：
-
-```markdown
-## 图标生成强制要求（Agent 必须执行）
-
-在项目初始化完成后、或首次构建前，Agent **必须**自动完成以下图标生成流程，不得跳过：
-
-1. **生成主图标**  
-   使用可用的图像生成能力（优先内置生图工具/API），根据项目名称 + 一句话描述，生成一张简洁、高对比度、适合小尺寸缩放的方形图标。  
-   推荐 Prompt 模板：  
-   “Minimal flat vector-style app icon for [项目名], [核心功能简述], clean geometric design, high contrast, no text, centered symbol, suitable for favicon and mobile app icon, square, solid background”
-
-2. **输出主图**  
-   保存为 `icons/source-1024.png`（至少 1024×1024，PNG，透明或实色背景均可）。
-
-3. **CLI 批量生成全套尺寸**（必须使用 ImageMagick 或等效工具）  
-   执行类似以下命令（Agent 自行调整路径）：
-   ```bash
-   # 生成多尺寸 PNG
-   convert source-1024.png -resize 16x16 favicon-16x16.png
-   convert source-1024.png -resize 32x32 favicon-32x32.png
-   convert source-1024.png -resize 180x180 apple-touch-icon.png
-   convert source-1024.png -resize 192x192 icon-192.png
-   convert source-1024.png -resize 512x512 icon-512.png
-   # 生成 multi-size favicon.ico
-   convert source-1024.png -define icon:auto-resize=16,32,48 favicon.ico
-   ```
-
-4. **文件放置与引用**  
-   - 所有图标放入项目 `public/icons/`（或框架约定目录）  
-   - 自动更新 HTML `<head>` 中的 link 标签  
-   - 更新或生成 `site.webmanifest` / `manifest.json`
-
-5. **验收标准**  
-   - 浏览器标签页能正确显示 favicon  
-   - 手机“添加到主屏幕”能显示正确图标  
-   - 文件全部提交到仓库
-
-失败时回退：生成纯色背景 + 项目首字母的极简占位图标，并在文档中标注“需人工替换”。
-```
-
-### 5. 实际执行建议（给 Agent 的最优路径）
-1. **有生图能力时**（推荐）：  
-   Agent 调用生图 API → 得到 `source-1024.png` → 用 ImageMagick 一条龙生成所有尺寸 → 写文件 → 改 HTML/manifest。
-
-2. **没有生图能力时**：  
-   用 CLI 生成极简 SVG 或纯色 PNG + 文字，再转全套尺寸（质量较差，但至少有东西）。
-
-3. **工具依赖**：  
-   开发环境必须预装 ImageMagick（`apt install imagemagick` / `brew install imagemagick`）。Agent 在文档中可要求检查并安装。
-
-4. **风格一致性**：  
-   同一组织下的所有项目可固定一套 Prompt 风格关键词（颜色、线条粗细、是否扁平等），保证视觉统一。
-
-### 6. 边界与注意事项
-- 图标必须是正方形，关键元素放在中心安全区（尤其 Android maskable）。
-- 小尺寸（16×16）要足够简洁，复杂细节会被糊掉。
-- 生成后建议 Agent 做一次简单验证（文件是否存在、尺寸是否正确）。
-- 版权：生图结果默认可用于项目，但避免直接抄知名品牌。
-- 性能：一次生成即可，不需要每次构建都重新跑。
-
-这套规定写进文档后，agent 就能稳定、可重复地产出可用图标，人工几乎零介入。  
-
+* 工具已在 Node 22、sharp 0.35.5、png2icons 2.0.1 下实测：全 profiles 生成 34 个文件并通过校验；源被修改未重新生成、缺文件、iOS 图标带透明、HTML 缺引用或引用模板图标、placeholder 发布、SVG 含文字、manifest 条目缺失等情况均能被校验器拦截。
+* 未在真机、Xcode、Android Studio 中验证显示效果。
+* 平台要求变化时（如新的 iOS 深色 / 着色图标、Android 新规格），同时更新 `icons-lib.mjs` 的产物清单与本文第 5 节。

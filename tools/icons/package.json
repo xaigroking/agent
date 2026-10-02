@@ -1,0 +1,17 @@
+{
+  "name": "agent-icon-tools",
+  "private": true,
+  "type": "module",
+  "description": "图标资产生成与校验，见《AI Agent 项目图标资产自动生成规范》",
+  "scripts": {
+    "generate": "node generate-icons.mjs",
+    "validate": "node validate-icons.mjs"
+  },
+  "dependencies": {
+    "png2icons": "^2.0.1",
+    "sharp": "^0.35.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
