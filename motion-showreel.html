@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Motion Showreel</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  MOTION SHOWREEL — 1920x1080 · 30fps · 15s (override: ?d=10)
+  Everything is drawn in code on one <canvas>. No external assets.
+
+  Deterministic: the whole film is a pure function of the frame number, so it is
+  seekable / frame-exact and easy to port to Remotion or HyperFrames:
+      window.renderFrame(n)   draw frame n (0 .. TOTAL-1)
+      window.FPS, window.TOTAL, window.DURATION
+
+  Keys: Space play/pause · R record .webm · H hide UI · ←/→ step a frame
+  URL : ?d=10 (duration) · ?clean=1 (no UI) · ?autoplay=1 · ?record=1 (auto-record)
+-->
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:ui-monospace,Menlo,Consolas,monospace}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{width:min(100vw,calc(100vh*16/9));height:min(100vh,calc(100vw*9/16));display:block;background:#050508}
+  #ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:12px;align-items:center;padding:14px 20px;
+      background:linear-gradient(transparent,rgba(0,0,0,.75));color:#d9d6cf;font-size:12px;letter-spacing:.08em;transition:opacity .35s}
+  #ui.hide{opacity:0;pointer-events:none}
+  #ui button{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);color:#f3efe6;border-radius:999px;
+      padding:8px 16px;font:inherit;cursor:pointer;text-transform:uppercase}
+  #ui button:hover{background:rgba(255,61,110,.35);border-color:#ff3d6e}
+  #ui input[type=range]{flex:1;accent-color:#ff3d6e}
+  #rec{color:#ff3d6e;display:none}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="ui">
+  <button id="bPlay">Play</button>
+  <button id="bRec">● Record .webm</button>
+  <input id="seek" type="range" min="0" value="0" step="1">
+  <span id="tc">00:00</span>
+  <span id="rec">● REC</span>
+</div>
+
+<script>
+/* ============ EDIT ME ============ */
+const NAME = 'YOUR NAME';
+const ROLE = 'MOTION DESIGNER';
+const TAGLINE = "LET'S MAKE SOMETHING MOVE  →";
+/* ================================= */
+
+const W = 1920, H = 1080, FPS = 30;
+const q = new URLSearchParams(location.search);
+const DUR = +q.get('d') || 15;
+const TOTAL = Math.round(DUR * FPS);
+const cv = document.getElementById('c');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+/* ---------- palette ---------- */
+const C = ['#ff3d6e', '#6a5cff', '#19e3c1', '#ffb020'];
+const CREAM = '#f3efe6', INK = '#08080c';
+const FONT = '"Helvetica Neue","Arial Black",Inter,"Segoe UI",system-ui,sans-serif';
+
+/* ---------- math / easing ---------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const eo3 = x => 1 - Math.pow(1 - clamp(x), 3);
+const eio3 = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const eoExp = x => { x = clamp(x); return x === 1 ? 1 : 1 - Math.pow(2, -10 * x); };
+// analytic damped spring, 0 -> 1 (k = stiffness, c = damping)
+function spring(t, k = 120, c = 12) {
+  if (t <= 0) return 0;
+  const w0 = Math.sqrt(k), z = c / (2 * w0);
+  if (z < 1) {
+    const wd = w0 * Math.sqrt(1 - z * z);
+    return 1 - Math.exp(-z * w0 * t) * (Math.cos(wd * t) + (z * w0 / wd) * Math.sin(wd * t));
+  }
+  return 1 - Math.exp(-w0 * t) * (1 + w0 * t);
+}
+function rng(seed) {
+  return () => {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* ---------- drawing helpers ---------- */
+const glowCache = {};
+function glow(col) {
+  if (glowCache[col]) return glowCache[col];
+  const g = document.createElement('canvas'); g.width = g.height = 128;
+  const x = g.getContext('2d');
+  const gr = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, col + 'ff'); gr.addColorStop(.25, col + '88'); gr.addColorStop(1, col + '00');
+  x.fillStyle = gr; x.fillRect(0, 0, 128, 128);
+  return glowCache[col] = g;
+}
+function dot(x, y, r, col, a = 1) {
+  ctx.globalAlpha = a;
+  ctx.drawImage(glow(col), x - r, y - r, r * 2, r * 2);
+}
+function setFont(size, weight = 900) {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+}
+function track(str, size, tr) {
+  setFont(size);
+  let x = 0; const arr = [];
+  for (const ch of str) { const w = ctx.measureText(ch).width; arr.push({ ch, x, w }); x += w + tr; }
+  return { arr, total: x - tr };
+}
+// per-letter layout; fn draws one glyph at local origin (baseline, centred)
+function letters(str, size, tr, cx, baseY, fn, left = false) {
+  const { arr, total } = track(str, size, tr);
+  const x0 = left ? cx : cx - total / 2;
+  setFont(size);
+  arr.forEach((o, i) => {
+    ctx.save(); ctx.translate(x0 + o.x + o.w / 2, baseY);
+    fn(o, i, arr.length); ctx.restore();
+  });
+  return total;
+}
+function cam(z, rot = 0, dx = 0, dy = 0) {
+  ctx.translate(W / 2 + dx, H / 2 + dy); ctx.rotate(rot); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+}
+function reset() { ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; }
+
+const TINT = [[0, 1], [1, 2], [2, 0], [1, 3], [0, 1]];
+function bg(i, t) {
+  reset();
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#0c0a14'); g.addColorStop(1, '#050508');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  const a = TINT[i];
+  dot(W * .25 + Math.sin(t * .6 + i) * 160, H * .3 + Math.cos(t * .5) * 100, 800, C[a[0]], .2);
+  dot(W * .78 + Math.cos(t * .4 + i) * 160, H * .75 + Math.sin(t * .7) * 90, 900, C[a[1]], .18);
+  reset();
+}
+
+/* =========================================================
+   SCENE 1 — IMPACT : MOTION slams in, particle burst
+   ========================================================= */
+const P1 = (() => {
+  const r = rng(7);
+  return Array.from({ length: 300 }, () => ({
+    a: r() * 6.283, s: 300 + r() * 1600, d: 1.2 + r() * 2.5, sz: 8 + r() * 26,
+    c: Math.floor(r() * 4), l: 1.1 + r() * 1.8, t0: .3 + r() * .08
+  }));
+})();
+function s1(t) {
+  bg(0, t);
+  ctx.save();
+  cam(1.2 - .2 * eo3(t / 3), -.04 * (1 - eo3(t / 2.6)));
+  // shockwave rings
+  ctx.lineWidth = 4;
+  for (let k = 0; k < 3; k++) {
+    const p = (t - .3 - k * .14) / 1.5;
+    if (p <= 0 || p >= 1) continue;
+    ctx.globalAlpha = (1 - p) * .8; ctx.strokeStyle = C[k];
+    ctx.beginPath(); ctx.arc(W / 2, H / 2, eoExp(p) * 1150, 0, 6.283); ctx.stroke();
+  }
+  // particles with streaks
+  ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (const p of P1) {
+    const tt = t - p.t0; if (tt <= 0 || tt > p.l) continue;
+    const pos = u => { const d = p.s * (1 - Math.exp(-p.d * u)) / p.d; return [W / 2 + Math.cos(p.a) * d, H / 2 + Math.sin(p.a) * d * .8]; };
+    const [x, y] = pos(tt), [px, py] = pos(Math.max(0, tt - .06));
+    const life = 1 - tt / p.l;
+    ctx.globalAlpha = life * .7; ctx.strokeStyle = C[p.c]; ctx.lineWidth = Math.max(1.5, p.sz * .12 * life);
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(x, y); ctx.stroke();
+    dot(x, y, p.sz * (.4 + life), C[p.c], life * .85);
+  }
+  reset();
+  // MOTION
+  const base = H / 2 + 120;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, base - 340, W, 400); ctx.clip();
+  const draw = (o, i, n, ghost) => {
+    const sp = spring(t - (.25 + i * .07), 130, 11);
+    const sgn = i % 2 ? 1 : -1;
+    ctx.translate(0, (1 - sp) * 460 + (sp > .99 ? Math.sin(t * 2 + i) * 3 : 0));
+    ctx.translate(0, -100); ctx.rotate((1 - sp) * .5 * sgn); ctx.translate(0, 100);
+    if (ghost) { ctx.strokeStyle = C[i % 2 ? 1 : 0]; ctx.lineWidth = 3; ctx.globalAlpha = .9; ctx.strokeText(o.ch, 14, 14); }
+    else { ctx.fillStyle = CREAM; ctx.fillText(o.ch, 0, 0); }
+  };
+  letters('MOTION', 340, -6, W / 2, base, (o, i, n) => draw(o, i, n, true));
+  letters('MOTION', 340, -6, W / 2, base, (o, i, n) => draw(o, i, n, false));
+  ctx.restore();
+  // subtitle + rule
+  const sa = eo3((t - 1) / .6);
+  if (sa > 0) {
+    setFont(34, 600); ctx.globalAlpha = sa; ctx.fillStyle = CREAM;
+    letters('SHOWREEL  ·  2026', 34, 22, W / 2, base + 105, o => ctx.fillText(o.ch, 0, (1 - sa) * 20));
+    ctx.globalAlpha = 1; ctx.strokeStyle = C[0]; ctx.lineWidth = 4;
+    const lw = 620 * eoExp((t - 1.1) / .9);
+    ctx.beginPath(); ctx.moveTo(W / 2 - lw / 2, base + 150); ctx.lineTo(W / 2 + lw / 2, base + 150); ctx.stroke();
+  }
+  reset();
+  ctx.restore();
+}
+
+/* =========================================================
+   SCENE 2 — FORM : geometric grid morphing wave
+   ========================================================= */
+function s2(t) {
+  bg(1, t);
+  ctx.save();
+  cam(1.22 - .22 * eo3(t / 3), .06 * (1 - eo3(t / 3)));
+  const cols = 15, rows = 9, cell = 150;
+  ctx.lineJoin = 'round';
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const x = W / 2 + (i - (cols - 1) / 2) * cell, y = H / 2 + (j - (rows - 1) / 2) * cell;
+    const d = Math.hypot(x - W / 2, y - H / 2) / 1100;
+    const sp = spring(t - (.05 + d * .75), 100, 10);
+    if (sp <= 0) continue;
+    const m = (Math.sin(t * 2.6 - d * 6) + 1) / 2;
+    const s = cell * .66 * sp * (.75 + .25 * m);
+    const fx = clamp((Math.abs(x - W / 2) - 740) / 220), fy = clamp((Math.abs(y - H / 2) - 300) / 130);
+    const f = .1 + .9 * Math.max(fx, fy);
+    const rot = (1 - sp) * Math.PI + m * Math.PI / 2 * (((i + j) & 1) ? 1 : -1);
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+    ctx.globalAlpha = clamp(sp) * f;
+    const col = C[(i * 2 + j) % 4];
+    ctx.beginPath(); ctx.roundRect(-s / 2, -s / 2, s, s, m * s / 2);
+    if ((i * 7 + j * 3) % 5 === 0) { ctx.fillStyle = col; ctx.fill(); }
+    else { ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.stroke(); }
+    ctx.restore();
+  }
+  reset();
+  // text
+  const lines = [['SHAPE THE', 'H/2-10', CREAM, .55], ['SPACE.', 'H/2+225', C[0], .72]];
+  const bases = [H / 2 - 10, H / 2 + 225];
+  lines.forEach((ln, k) => {
+    const sp = spring(t - ln[3], 120, 15);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, bases[k] - 230, W, 260); ctx.clip();
+    setFont(250); ctx.fillStyle = ln[2];
+    letters(ln[0], 250, -4, W / 2, bases[k] + (1 - sp) * 280, o => ctx.fillText(o.ch, 0, 0));
+    ctx.restore();
+  });
+  ctx.restore();
+}
+
+/* =========================================================
+   SCENE 3 — RHYTHM : word slam with colour wipes, marquees
+   ========================================================= */
+const WORDS = ['DESIGN', 'ANIMATE', 'ITERATE', 'DELIVER'];
+function marquee(txt, size, y, speed, t) {
+  setFont(size); ctx.textAlign = 'left';
+  const w = ctx.measureText(txt).width;
+  ctx.strokeStyle = CREAM; ctx.lineWidth = 2; ctx.globalAlpha = .22;
+  let off = ((t * speed) % w + w) % w;
+  for (let x = -off; x < W + w; x += w) ctx.strokeText(txt, x, y);
+  ctx.globalAlpha = 1; ctx.textAlign = 'center';
+}
+function s3(t) {
+  bg(2, t);
+  ctx.save();
+  cam(1.05 + .03 * Math.sin(t * 1.3), .012 * Math.sin(t * 1.7));
+  marquee('MOTION — DESIGN — CODE — ', 150, 205, -420, t);
+  marquee('RHYTHM — TIMING — SPACING — ', 150, H - 85, 420, t);
+  const T = .15, L = .64;
+  const idx = clamp(Math.floor((t - T) / L), 0, 3), wt = t - T - idx * L;
+  const bandH = 380, by = H / 2 - bandH / 2;
+  if (t > T) {
+    if (idx > 0) { ctx.fillStyle = C[idx - 1]; ctx.fillRect(0, by, W, bandH); }
+    const p = eoExp(wt / .26);
+    ctx.fillStyle = C[idx];
+    if (idx % 2 === 0) ctx.fillRect(0, by, W * p, bandH); else ctx.fillRect(W * (1 - p), by, W * p, bandH);
+    // word
+    const word = WORDS[idx];
+    let size = 290; const tw = track(word, size, -4).total;
+    if (tw > 1560) size *= 1560 / tw;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, by, W, bandH); ctx.clip();
+    letters(word, size, -4, W / 2, H / 2 + size * .36, (o, i) => {
+      const sp = spring(wt - .05 - i * .028, 260, 19);
+      ctx.globalAlpha = clamp((wt - .05 - i * .028) / .05);
+      ctx.translate(0, (1 - sp) * 220); ctx.scale(1 + (1 - sp) * .5, 1 + (1 - sp) * .5);
+      ctx.fillStyle = INK; ctx.fillText(o.ch, 0, 0);
+    });
+    ctx.restore();
+    setFont(30, 600); ctx.textAlign = 'left'; ctx.fillStyle = INK;
+    ctx.fillText(`0${idx + 1} / 04`, 90, by + 62);
+    ctx.textAlign = 'right'; ctx.fillText('KINETIC TYPE', W - 90, by + bandH - 40);
+    ctx.textAlign = 'center';
+  }
+  ctx.restore();
+}
+
+/* =========================================================
+   SCENE 4 — DEPTH : 3D wireframe torus, orbits, counter
+   ========================================================= */
+const TOR = (() => {
+  const nu = 60, nv = 28, pts = [];
+  for (let i = 0; i < nu; i++) {
+    const row = [];
+    for (let j = 0; j < nv; j++) {
+      const u = i / nu * 6.2832, v = j / nv * 6.2832, r = 300 + 120 * Math.cos(v);
+      row.push([r * Math.cos(u), r * Math.sin(u), 120 * Math.sin(v)]);
+    }
+    pts.push(row);
+  }
+  return { pts, nu, nv };
+})();
+function s4(t) {
+  bg(3, t);
+  ctx.save();
+  cam(1.12 - .12 * eo3(t / 3), .03 * (1 - eo3(t / 3)), -30 * (1 - eo3(t / 3)), 0);
+  const cx = 1300, cy = 520;
+  const sc = .15 + .85 * spring(t - .05, 70, 11);
+  const ax = .45 + Math.sin(t * 1.1) * .35, ay = t * .8;
+  const cA = Math.cos(ax), sA = Math.sin(ax), cB = Math.cos(ay), sB = Math.sin(ay);
+  const P = TOR.pts.map(row => row.map(p => {
+    const y1 = p[1] * cA - p[2] * sA, z1 = p[1] * sA + p[2] * cA;
+    const x2 = p[0] * cB + z1 * sB, z2 = -p[0] * sB + z1 * cB;
+    const f = 1400 / (1400 + z2 + 300);
+    return [cx + x2 * f * sc, cy + y1 * f * sc, z2];
+  }));
+  const buckets = [[], [], []];
+  const { nu, nv } = TOR;
+  for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const a = P[i][j], b = P[i][(j + 1) % nv], c = P[(i + 1) % nu][j];
+    const bk = z => z < -80 ? 2 : z < 120 ? 1 : 0;
+    buckets[bk(a[2])].push([a, b], [a, c]);
+  }
+  ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  [[CREAM, .12, 1.2], [C[1], .45, 1.6], [C[2], .95, 2.2]].forEach((st, k) => {
+    ctx.strokeStyle = st[0]; ctx.globalAlpha = st[1]; ctx.lineWidth = st[2];
+    ctx.beginPath();
+    for (const [a, b] of buckets[k]) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); }
+    ctx.stroke();
+  });
+  // orbit particles
+  for (let o = 0; o < 3; o++) {
+    const tilt = -.5 + o * .5, R = 520 + o * 70, n = 70;
+    for (let k = 0; k < n; k++) {
+      const a = k / n * 6.2832 + t * (.6 - o * .18) * (o % 2 ? -1 : 1);
+      const ex = Math.cos(a) * R * sc, ey = Math.sin(a) * R * .28 * sc;
+      const x = cx + ex * Math.cos(tilt) - ey * Math.sin(tilt), y = cy + ex * Math.sin(tilt) + ey * Math.cos(tilt);
+      const front = (Math.sin(a) + 1) / 2;
+      dot(x, y, 7 + front * 14, C[(o + k) % 4 === 3 ? 0 : o === 0 ? 0 : o === 1 ? 3 : 2], .25 + front * .65);
+    }
+  }
+  reset();
+  // text
+  const lines = [['PURE', 440, CREAM, .3], ['CODE.', 670, C[2], .45]];
+  lines.forEach(ln => {
+    const sp = spring(t - ln[3], 120, 15);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, ln[1] - 230, 1000, 260); ctx.clip();
+    setFont(250); ctx.fillStyle = ln[2];
+    letters(ln[0], 250, -4, 130, ln[1] + (1 - sp) * 300, o => ctx.fillText(o.ch, 0, 0), true);
+    ctx.restore();
+  });
+  const sa = eo3((t - 1) / .6);
+  setFont(30, 600); ctx.textAlign = 'left'; ctx.fillStyle = CREAM; ctx.globalAlpha = sa * .8;
+  ctx.fillText('0 IMAGES  ·  0 VIDEO  ·  100% MATH', 134, 765 + (1 - sa) * 20);
+  // counter
+  ctx.globalAlpha = eo3((t - .6) / .5);
+  const n = Math.round(30 * eo3((t - .5) / 1.5));
+  setFont(120, 900); ctx.textAlign = 'left'; ctx.fillStyle = C[3];
+  ctx.fillText(String(n).padStart(2, '0'), 130, 930);
+  const nw = ctx.measureText('00').width;
+  setFont(34, 600); ctx.fillStyle = CREAM; ctx.fillText('FPS', 130 + nw + 24, 930);
+  ctx.textAlign = 'center';
+  reset();
+  ctx.restore();
+}
+
+/* =========================================================
+   SCENE 5 — SIGNATURE : particles converge, hexagon rings
+   ========================================================= */
+const P5 = (() => {
+  const r = rng(21);
+  return Array.from({ length: 240 }, () => ({
+    sx: r() * W, sy: r() * H, a: r() * 6.283, rr: 650 + (r() - .5) * 50, sz: 8 + r() * 14,
+    c: Math.floor(r() * 4), dl: r() * .6
+  }));
+})();
+function hex(r) { ctx.beginPath(); for (let k = 0; k < 6; k++) { const a = k / 6 * 6.2832; ctx[k ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r); } ctx.closePath(); }
+function s5(t) {
+  bg(4, t);
+  ctx.save();
+  cam(1.4 - .4 * eio3(t / 2.4), .05 * (1 - eio3(t / 2.4)));
+  // hexagons
+  for (let i = 0; i < 5; i++) {
+    const sp = spring(t - .1 - i * .09, 70, 10);
+    if (sp <= 0) continue;
+    ctx.save(); ctx.translate(W / 2, H / 2);
+    ctx.rotate(t * .25 * (i % 2 ? 1 : -1) + i * .5);
+    ctx.scale(sp, sp);
+    ctx.strokeStyle = C[i % 4]; ctx.globalAlpha = .55 - i * .06; ctx.lineWidth = 3;
+    hex(230 + i * 95); ctx.stroke();
+    ctx.restore();
+  }
+  // converging particles into ring
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of P5) {
+    const sp = spring(t - p.dl, 40, 9);
+    const tx = W / 2 + Math.cos(p.a + t * .3) * p.rr, ty = H / 2 + Math.sin(p.a + t * .3) * p.rr * .5;
+    dot(lerp(p.sx, tx, sp), lerp(p.sy, ty, sp), p.sz * (.6 + .4 * sp), C[p.c], .35 + .6 * sp);
+  }
+  reset();
+  // name
+  const base = H / 2 + 50;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, base - 230, W, 260); ctx.clip();
+  letters(NAME, 215, -4, W / 2, base, (o, i) => {
+    const sp = spring(t - (.5 + i * .045), 130, 13);
+    ctx.translate(0, (1 - sp) * 300); ctx.fillStyle = CREAM; ctx.fillText(o.ch, 0, 0);
+  });
+  ctx.restore();
+  // role
+  const ra = eo3((t - 1.1) / .8);
+  ctx.globalAlpha = ra; ctx.fillStyle = C[0];
+  letters(ROLE, 56, lerp(80, 34, ra), W / 2, base + 105, o => ctx.fillText(o.ch, 0, 0));
+  ctx.globalAlpha = 1; ctx.strokeStyle = CREAM; ctx.lineWidth = 2;
+  const lw = 720 * eoExp((t - 1.3) / 1); ctx.globalAlpha = .5;
+  ctx.beginPath(); ctx.moveTo(W / 2 - lw / 2, base + 150); ctx.lineTo(W / 2 + lw / 2, base + 150); ctx.stroke();
+  ctx.globalAlpha = eo3((t - 1.8) / .6) * .75; ctx.fillStyle = CREAM;
+  letters(TAGLINE, 28, 10, W / 2, base + 205, o => ctx.fillText(o.ch, 0, 0));
+  reset();
+  ctx.restore();
+}
+
+/* =========================================================
+   TRANSITIONS
+   ========================================================= */
+function tpath(type, p) {
+  ctx.beginPath();
+  if (type === 'iris') ctx.arc(W / 2, H / 2, p * 1250, 0, 6.283);
+  else if (type === 'diag') {
+    const sk = 420, x = -sk + (W + sk * 2) * p;
+    ctx.moveTo(0, 0); ctx.lineTo(x + sk, 0); ctx.lineTo(x - sk, H); ctx.lineTo(0, H); ctx.closePath();
+  } else if (type === 'slats') {
+    const n = 6, h = H / n;
+    for (let i = 0; i < n; i++) {
+      const qq = clamp(p * 1.7 - i * .12);
+      if (i % 2) ctx.rect(W * (1 - qq), i * h - 1, W * qq, h + 2); else ctx.rect(0, i * h - 1, W * qq, h + 2);
+    }
+  } else { // split
+    const hh = p * H / 2 + (p > 0 ? 2 : 0), ww = p * W / 2;
+    ctx.rect(0, H / 2 - hh, W, hh * 2);
+  }
+}
+const TTYPES = ['iris', 'diag', 'slats', 'split'];
+const TCOL = [C[0], C[1], C[2], C[3]];
+
+/* =========================================================
+   COMPOSER
+   ========================================================= */
+const SCENES = [s1, s2, s3, s4, s5];
+const NAMES = ['01 / IMPACT', '02 / FORM', '03 / RHYTHM', '04 / DEPTH', '05 / SIGNATURE'];
+const SLEN = DUR / 5, K = 3 / SLEN, PRE = .3, TW = .6;
+const sceneStart = n => n === 0 ? 0 : n * SLEN - PRE;
+
+const noise = document.createElement('canvas'); noise.width = noise.height = 256;
+(() => {
+  const x = noise.getContext('2d'), im = x.createImageData(256, 256), r = rng(99);
+  for (let i = 0; i < im.data.length; i += 4) { const v = r() * 255; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255 * r(); }
+  x.putImageData(im, 0, 0);
+})();
+const noisePat = ctx.createPattern(noise, 'repeat');
+const vig = document.createElement('canvas'); vig.width = W; vig.height = H;
+(() => {
+  const x = vig.getContext('2d'), g = x.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.0);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.7)');
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+})();
+
+function runScene(n, t) {
+  ctx.save();
+  SCENES[n](Math.max(0, (t - sceneStart(n)) * K));
+  ctx.restore();
+}
+
+function renderFrame(f) {
+  f = clamp(Math.round(f), 0, TOTAL - 1);
+  const t = f / FPS;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); reset();
+  let n = 0;
+  for (let k = 1; k < 5; k++) if (t >= sceneStart(k)) n = k;
+  const tp = n > 0 ? (t - sceneStart(n)) / TW : 2;
+  if (n > 0 && tp < 1) {
+    runScene(n - 1, t);
+    const type = TTYPES[(n - 1) % 4], p = eio3(tp);
+    if (p > 0 && p < 1) {
+      ctx.save();
+      tpath(type, Math.min(1, p + .05)); ctx.fillStyle = TCOL[n % 4]; ctx.fill();
+      ctx.restore();
+    }
+    ctx.save();
+    tpath(type, p); ctx.clip();
+    runScene(n, t);
+    ctx.restore();
+  } else runScene(n, t);
+
+  // film grain + vignette
+  ctx.save();
+  ctx.globalAlpha = .07; ctx.translate(-((f * 53) % 256), -((f * 97) % 256));
+  ctx.fillStyle = noisePat; ctx.fillRect(0, 0, W + 256, H + 256);
+  ctx.restore();
+  reset(); ctx.drawImage(vig, 0, 0);
+
+  // HUD
+  setFont(22, 500); ctx.textAlign = 'left'; ctx.fillStyle = CREAM;
+  ctx.font = `500 22px ui-monospace,Menlo,Consolas,monospace`;
+  ctx.globalAlpha = .65;
+  ctx.fillText('● MOTION SHOWREEL ©2026', 64, 72);
+  ctx.textAlign = 'right';
+  const sec = Math.floor(t), fr = f % FPS;
+  ctx.fillText(`00:${String(sec).padStart(2, '0')}:${String(fr).padStart(2, '0')}`, W - 64, 72);
+  ctx.textAlign = 'left'; ctx.globalAlpha = .55;
+  const shown = Math.min(4, Math.floor((t + .1) / SLEN));
+  ctx.fillText(NAMES[shown], 64, H - 66);
+  ctx.globalAlpha = .15; ctx.fillStyle = CREAM; ctx.fillRect(64, H - 44, W - 128, 3);
+  ctx.globalAlpha = 1; ctx.fillStyle = C[shown % 4]; ctx.fillRect(64, H - 44, (W - 128) * (f + 1) / TOTAL, 3);
+  ctx.textAlign = 'center'; reset();
+
+  // fade out at the very end
+  const fo = clamp((t - (DUR - .4)) / .4);
+  if (fo > 0) { ctx.globalAlpha = fo; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); reset(); }
+}
+
+/* =========================================================
+   PLAYER + RECORDER
+   ========================================================= */
+const ui = document.getElementById('ui'), bPlay = document.getElementById('bPlay'), bRec = document.getElementById('bRec');
+const seek = document.getElementById('seek'), tcEl = document.getElementById('tc'), recEl = document.getElementById('rec');
+seek.max = TOTAL - 1;
+let playing = false, startMs = 0, cur = -1, recorder = null;
+
+function show(f) {
+  if (f === cur) return;
+  cur = f; renderFrame(f);
+  seek.value = f; tcEl.textContent = `${(f / FPS).toFixed(2)}s / ${DUR}s`;
+}
+function play(from = 0) {
+  playing = true; startMs = performance.now() - from / FPS * 1000; bPlay.textContent = 'Pause';
+}
+function pause() { playing = false; bPlay.textContent = 'Play'; }
+function tick(now) {
+  if (playing) {
+    let f = Math.floor((now - startMs) / 1000 * FPS);
+    if (f >= TOTAL) {
+      if (recorder) { show(TOTAL - 1); const r = recorder; recorder = null; pause(); setTimeout(() => r.stop(), 250); }
+      else { startMs = now; f = 0; show(0); }
+    } else show(f);
+  }
+  requestAnimationFrame(tick);
+}
+bPlay.onclick = () => playing ? pause() : play(cur < 0 || cur >= TOTAL - 1 ? 0 : cur);
+seek.oninput = () => { pause(); show(+seek.value); };
+
+function record() {
+  if (recorder) return;
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  if (!mime) { alert('MediaRecorder not supported in this browser — use Chrome, or a screen recorder.'); return; }
+  const rec = new MediaRecorder(cv.captureStream(FPS), { mimeType: mime, videoBitsPerSecond: 20e6 });
+  const chunks = [];
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    recEl.style.display = 'none';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+    a.download = 'motion-showreel.webm'; a.click();
+  };
+  recorder = rec; recEl.style.display = 'inline';
+  cur = -1; show(0); rec.start(); play(0);
+}
+bRec.onclick = record;
+
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); bPlay.click(); }
+  else if (e.key === 'r' || e.key === 'R') record();
+  else if (e.key === 'h' || e.key === 'H') ui.classList.toggle('hide');
+  else if (e.key === 'ArrowRight') { pause(); show(Math.min(TOTAL - 1, cur + 1)); }
+  else if (e.key === 'ArrowLeft') { pause(); show(Math.max(0, cur - 1)); }
+});
+
+window.renderFrame = renderFrame;
+window.FPS = FPS; window.TOTAL = TOTAL; window.DURATION = DUR;
+
+if (q.get('clean')) ui.classList.add('hide');
+show(0);
+requestAnimationFrame(tick);
+if (q.get('record')) record(); else if (q.get('autoplay')) play(0);
+</script>
+</body>
+</html>
