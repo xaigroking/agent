@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>垂钓大师</title>
+<style>
+  :root{--bg:#10202e;--panel:#1b3347;--line:#2f5576;--text:#e8f2fa;--accent:#ffcc4d;--ok:#5ad17a}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:12px;user-select:none}
+  h1{margin:4px 0 8px;font-size:20px}
+  #wrap{width:100%;max-width:720px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px}
+  .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:3px 0}
+  .row b{font-size:13px;opacity:.8;min-width:42px}
+  button.opt{background:#0f2434;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:13px;cursor:pointer}
+  button.opt.sel{border-color:var(--accent);background:#3a3216;color:var(--accent)}
+  button.opt.lock{opacity:.6}
+  #coins{margin-left:auto;color:var(--accent);font-weight:700}
+  canvas{width:100%;display:block;border-radius:10px;border:1px solid var(--line);touch-action:none;background:#000}
+  #msg{min-height:22px;text-align:center;margin:6px 0;font-size:15px}
+  #book{font-size:13px;line-height:1.8}
+  #book span{display:inline-block;margin:0 8px 0 0;white-space:nowrap}
+  #book .no{opacity:.3;filter:grayscale(1)}
+  .hint{font-size:12px;opacity:.65;text-align:center}
+</style>
+</head>
+<body>
+<h1>🎣 垂钓大师</h1>
+<div id="wrap">
+  <div class="panel">
+    <div class="row"><b>水域</b><span id="waters"></span><span id="coins"></span></div>
+    <div class="row"><b>鱼竿</b><span id="rods"></span></div>
+    <div class="row"><b>鱼饵</b><span id="baits"></span></div>
+  </div>
+  <canvas id="c" width="720" height="420"></canvas>
+  <div id="msg"></div>
+  <div class="panel"><div id="book"></div></div>
+  <div class="hint">点击画面/空格：抛竿 → 鱼咬钩（浮漂下沉）时再点击提竿 → 按住上升、松开下落，让绿色钓框罩住鱼</div>
+</div>
+<script>
+// ---------- 数据 ----------
+const WATERS = [
+  {id:'pond', name:'🌿 池塘', cost:0,   sky:['#9fd8f0','#d9f1ff'], water:['#4f9a7a','#2c5f52']},
+  {id:'river',name:'🏞️ 河流', cost:60,  sky:['#8fc9e8','#cfeaf7'], water:['#3f88b5','#1f4f78']},
+  {id:'lake', name:'🏔️ 湖泊', cost:200, sky:['#b7c5e6','#e8ecf7'], water:['#2f6fb0','#173b73']},
+  {id:'sea',  name:'🌊 大海', cost:500, sky:['#ffb27a','#ffe3b8'], water:['#1f7fb8','#0a2c55']},
+];
+// rod: 钓框高度(bar)、上升力度(lift)、可钓鱼的最高等级(lv)
+const RODS = [
+  {id:'bamboo', name:'竹竿',   cost:0,   bar:70,  lift:1.0, lv:1},
+  {id:'glass',  name:'玻璃钢竿',cost:80,  bar:90,  lift:1.1, lv:2},
+  {id:'carbon', name:'碳素竿', cost:300, bar:112, lift:1.2, lv:3},
+  {id:'sea',    name:'海竿',   cost:700, bar:135, lift:1.3, lv:4},
+];
+// bait: bite 咬钩速度倍率；like 偏好的鱼类标签倍率
+const BAITS = [
+  {id:'bread', name:'面包屑', cost:0,   bite:1.0, like:{veg:2.5}},
+  {id:'worm',  name:'蚯蚓',   cost:30,  bite:1.4, like:{omni:2.5,small:1.5}},
+  {id:'shrimp',name:'活虾',   cost:120, bite:1.7, like:{pred:3,omni:1.5}},
+  {id:'lure',  name:'路亚假饵',cost:350, bite:2.0, like:{pred:4,big:2}},
+];
+// fish: lv 需要的鱼竿等级；diff 难度(0~1)；w 基础权重；tag 偏好标签
+const FISH = [
+  {n:'小鲫鱼',e:'🐟',w:['pond','river'],lv:1,diff:.15,price:4, wt:30,tag:['veg','small']},
+  {n:'泥鳅',  e:'🐍',w:['pond'],         lv:1,diff:.2, price:5, wt:18,tag:['omni','small']},
+  {n:'草鱼',  e:'🐠',w:['pond','river','lake'],lv:2,diff:.35,price:18,wt:14,tag:['veg']},
+  {n:'鲤鱼',  e:'🐡',w:['pond','river','lake'],lv:2,diff:.4, price:25,wt:12,tag:['omni']},
+  {n:'金鲤鱼',e:'✨',w:['pond'],         lv:3,diff:.6, price:120,wt:2, tag:['omni','big']},
+  {n:'溪石斑',e:'🐟',w:['river'],        lv:2,diff:.35,price:20,wt:14,tag:['omni']},
+  {n:'鲈鱼',  e:'🐟',w:['river','lake'], lv:2,diff:.5, price:40,wt:10,tag:['pred']},
+  {n:'鲶鱼',  e:'🐋',w:['river','lake'], lv:3,diff:.6, price:70,wt:6, tag:['pred','big']},
+  {n:'虹鳟',  e:'🐠',w:['lake'],         lv:2,diff:.45,price:45,wt:12,tag:['pred']},
+  {n:'青鱼',  e:'🐟',w:['lake'],         lv:3,diff:.6, price:85,wt:7, tag:['omni','big']},
+  {n:'湖怪巨鱼',e:'🦕',w:['lake'],       lv:4,diff:.85,price:400,wt:1, tag:['pred','big']},
+  {n:'沙丁鱼',e:'🐟',w:['sea'],          lv:1,diff:.2, price:8, wt:28,tag:['small','omni']},
+  {n:'鲷鱼',  e:'🐠',w:['sea'],          lv:2,diff:.4, price:35,wt:14,tag:['omni']},
+  {n:'章鱼',  e:'🐙',w:['sea'],          lv:3,diff:.6, price:90,wt:7, tag:['pred']},
+  {n:'金枪鱼',e:'🐟',w:['sea'],          lv:4,diff:.75,price:220,wt:4,tag:['pred','big']},
+  {n:'鲨鱼',  e:'🦈',w:['sea'],          lv:4,diff:.9, price:500,wt:1.5,tag:['pred','big']},
+];
+
+// ---------- 存档 ----------
+const SAVE_KEY='fishing_h5_v1';
+let S={coins:0,water:'pond',rod:'bamboo',bait:'bread',own:{pond:1,bamboo:1,bread:1},caught:{}};
+try{const s=JSON.parse(localStorage.getItem(SAVE_KEY));if(s)S=Object.assign(S,s)}catch(e){}
+const save=()=>{try{localStorage.setItem(SAVE_KEY,JSON.stringify(S))}catch(e){}};
+const $=id=>document.getElementById(id);
+const cur=(arr,id)=>arr.find(x=>x.id===id);
+
+// ---------- UI ----------
+function say(t){$('msg').textContent=t}
+function buildGroup(el,arr,key,fmt){
+  el.innerHTML='';
+  arr.forEach(it=>{
+    const b=document.createElement('button');
+    const owned=S.own[it.id];
+    b.className='opt'+(S[key]===it.id?' sel':'')+(owned?'':' lock');
+    b.textContent=fmt(it)+(owned?'':` 🔒${it.cost}`);
+    b.onclick=()=>{
+      if(state!=='idle'){say('先收竿再换装备');return}
+      if(!owned){
+        if(S.coins<it.cost){say(`金币不足，需要 ${it.cost}`);return}
+        S.coins-=it.cost;S.own[it.id]=1;say(`已购买：${it.name}`);
+      }
+      S[key]=it.id;save();refreshUI();
+    };
+    el.appendChild(b);
+  });
+}
+function refreshUI(){
+  buildGroup($('waters'),WATERS,'water',w=>w.name);
+  buildGroup($('rods'),RODS,'rod',r=>r.name);
+  buildGroup($('baits'),BAITS,'bait',b=>b.name);
+  $('coins').textContent='💰 '+S.coins;
+  const w=S.water;
+  $('book').innerHTML='<b>图鉴：</b>'+FISH.filter(f=>f.w.includes(w)).map(f=>{
+    const c=S.caught[f.n]||0;
+    return `<span class="${c?'':'no'}">${f.e}${c?f.n:'???'}${c?'×'+c:''}</span>`}).join('');
+}
+
+// ---------- 游戏状态 ----------
+const cv=$('c'),g=cv.getContext('2d'),W=cv.width,H=cv.height;
+const WATER_Y=190;
+let state='idle';           // idle | waiting | bite | reel | result
+let t=0,timer=0,fish=null,popup=null;
+let reel={};                // 拉扯小游戏状态
+let holding=false;
+
+function pickFish(){
+  const rod=cur(RODS,S.rod),bait=cur(BAITS,S.bait);
+  const list=FISH.filter(f=>f.w.includes(S.water)&&f.lv<=rod.lv);
+  let tot=0;
+  const ws=list.map(f=>{
+    let m=1;f.tag.forEach(tg=>{if(bait.like[tg])m*=bait.like[tg]});
+    const w=f.wt*m;tot+=w;return w});
+  let r=Math.random()*tot;
+  for(let i=0;i<list.length;i++){if((r-=ws[i])<=0)return list[i]}
+  return list[0];
+}
+
+function act(){            // 点击/空格
+  if(state==='idle'){
+    state='waiting';fish=null;popup=null;
+    const bait=cur(BAITS,S.bait);
+    timer=(1.5+Math.random()*4.5)/bait.bite;   // 咬钩等待
+    say('抛竿成功，等待鱼儿上钩…');
+  }else if(state==='waiting'){
+    state='idle';say('收竿太早，什么也没钓到');
+  }else if(state==='bite'){
+    startReel();
+  }else if(state==='result'){
+    state='idle';popup=null;say('点击画面再次抛竿');
+  }
+}
+
+function startReel(){
+  const rod=cur(RODS,S.rod);
+  state='reel';
+  reel={bar:rod.bar,barY:300-rod.bar,barV:0,fy:150,ft:150,fv:0,prog:30,lift:rod.lift,diff:fish.diff,tick:0};
+  say('按住上升、松开下落，让绿框罩住鱼！');
+}
+
+function endReel(win){
+  state='result';
+  if(win){
+    S.coins+=fish.price;S.caught[fish.n]=(S.caught[fish.n]||0)+1;save();refreshUI();
+    popup={text:`${fish.e} 钓到 ${fish.n}！ +${fish.price}💰`,ok:true};
+    say(`钓到了 ${fish.n}！点击继续`);
+  }else{
+    popup={text:'鱼跑掉了…',ok:false};say('鱼挣脱了，点击继续');
+  }
+}
+
+function update(dt){
+  t+=dt;
+  if(state==='waiting'){
+    timer-=dt;
+    if(timer<=0){fish=pickFish();state='bite';timer=1.1;say('⚡ 咬钩了！快点击提竿！')}
+  }else if(state==='bite'){
+    timer-=dt;
+    if(timer<=0){state='idle';say('慢了一步，鱼跑了。点击重新抛竿')}
+  }else if(state==='reel'){
+    const r=reel,TR=300;
+    // 钓框物理：按住向上加速，松开受重力
+    r.barV+=(holding?-900*r.lift:700)*dt;
+    r.barV=Math.max(-380,Math.min(380,r.barV));
+    r.barY+=r.barV*dt;
+    if(r.barY<0){r.barY=0;r.barV=0}
+    if(r.barY>TR-r.bar){r.barY=TR-r.bar;r.barV*=-.3}
+    // 鱼随机游动，难度越高越快越频繁
+    r.tick-=dt;
+    if(r.tick<=0){r.ft=10+Math.random()*(TR-40);r.tick=(.9-.55*r.diff)*(.5+Math.random())}
+    const sp=60+r.diff*330;
+    r.fy+=Math.sign(r.ft-r.fy)*Math.min(Math.abs(r.ft-r.fy),sp*dt);
+    const inside=r.fy+10>r.barY&&r.fy+10<r.barY+r.bar;
+    r.inside=inside;
+    r.prog+=(inside?22:-(14+r.diff*10))*dt;
+    if(r.prog>=100)endReel(true);
+    else if(r.prog<=0)endReel(false);
+  }
+}
+
+// ---------- 绘制 ----------
+function draw(){
+  const w=cur(WATERS,S.water);
+  let gr=g.createLinearGradient(0,0,0,WATER_Y);gr.addColorStop(0,w.sky[0]);gr.addColorStop(1,w.sky[1]);
+  g.fillStyle=gr;g.fillRect(0,0,W,WATER_Y);
+  // 远山
+  g.fillStyle='rgba(60,90,110,.35)';
+  g.beginPath();g.moveTo(0,WATER_Y);
+  for(let x=0;x<=W;x+=40)g.lineTo(x,WATER_Y-30-24*Math.sin(x*.012+S.water.length)-14*Math.sin(x*.03));
+  g.lineTo(W,WATER_Y);g.fill();
+  // 水面
+  gr=g.createLinearGradient(0,WATER_Y,0,H);gr.addColorStop(0,w.water[0]);gr.addColorStop(1,w.water[1]);
+  g.fillStyle=gr;g.fillRect(0,WATER_Y,W,H-WATER_Y);
+  g.strokeStyle='rgba(255,255,255,.25)';g.lineWidth=2;
+  for(let i=0;i<9;i++){
+    const y=WATER_Y+14+i*i*3.2;g.beginPath();
+    for(let x=0;x<=W;x+=12)g.lineTo(x,y+Math.sin(x*.03+t*1.5+i)*2.5);
+    g.stroke();
+  }
+  // 水下游鱼剪影
+  g.globalAlpha=.25;g.font='22px serif';
+  for(let i=0;i<4;i++){const x=((t*20*(i+1)+i*200)%(W+80))-40;g.fillText('🐟',x,WATER_Y+80+i*45)}
+  g.globalAlpha=1;
+  // 钓者 & 鱼竿
+  const px=110,py=WATER_Y-8,rod=cur(RODS,S.rod);
+  g.font='46px serif';g.fillText('🧑‍🌾',px-40,py+10);
+  const tipX=px+90,tipY=py-70;
+  g.strokeStyle='#6b4a2b';g.lineWidth=3+rod.lv*.6;
+  g.beginPath();g.moveTo(px+10,py-4);g.quadraticCurveTo(px+50,py-40,tipX,tipY);g.stroke();
+  // 浮漂 / 线
+  if(state!=='idle'){
+    let fx=430,fy=WATER_Y+16+Math.sin(t*2)*2;
+    if(state==='bite'){fy+=14+Math.sin(t*40)*4}
+    if(state==='reel'){fx=430-(reel.prog/100)*230;fy=WATER_Y+10+Math.sin(t*12)*3}
+    g.strokeStyle='rgba(255,255,255,.8)';g.lineWidth=1;
+    g.beginPath();g.moveTo(tipX,tipY);g.quadraticCurveTo((tipX+fx)/2,Math.min(tipY,fy)-20,fx,fy-8);g.stroke();
+    g.fillStyle='#e74c3c';g.beginPath();g.arc(fx,fy-4,7,0,7);g.fill();
+    g.fillStyle='#fff';g.fillRect(fx-7,fy-6,14,3);
+    if(state==='bite'){g.fillStyle='#fff';g.font='bold 34px sans-serif';g.fillText('❗',fx+14,fy-24)}
+    if(state==='waiting'||state==='bite'){
+      g.strokeStyle='rgba(255,255,255,.4)';
+      const rr=(t*18)%30;g.beginPath();g.ellipse(fx,fy+2,rr,rr*.3,0,0,7);g.stroke();
+    }
+  }
+  // 拉扯小游戏
+  if(state==='reel'){
+    const r=reel,X=W-90,Y=60,TR=300;
+    g.fillStyle='rgba(0,0,0,.55)';g.fillRect(X-26,Y-14,92,TR+28);
+    g.fillStyle='#14283a';g.fillRect(X,Y,34,TR);
+    g.fillStyle=r.inside?'rgba(90,209,122,.85)':'rgba(90,209,122,.5)';
+    g.fillRect(X,Y+r.barY,34,r.bar);
+    g.font='24px serif';g.fillText(fish.e,X+4,Y+r.fy+22);
+    // 进度条
+    g.fillStyle='#14283a';g.fillRect(X+42,Y,12,TR);
+    g.fillStyle=r.prog>50?'#5ad17a':r.prog>25?'#ffcc4d':'#e74c3c';
+    const ph=TR*r.prog/100;g.fillRect(X+42,Y+TR-ph,12,ph);
+  }
+  // 结果弹窗
+  if(popup){
+    g.fillStyle='rgba(0,0,0,.6)';g.fillRect(W/2-190,H/2-50,380,90);
+    g.fillStyle=popup.ok?'#ffcc4d':'#ff8a7a';g.font='bold 26px sans-serif';g.textAlign='center';
+    g.fillText(popup.text,W/2,H/2+4);g.font='14px sans-serif';g.fillStyle='#fff';
+    g.fillText('点击继续',W/2,H/2+28);g.textAlign='left';
+  }
+  if(state==='idle'){
+    g.fillStyle='rgba(0,0,0,.45)';g.font='bold 20px sans-serif';g.textAlign='center';
+    g.fillText('点击画面 / 按空格 抛竿',W/2,H-24);g.textAlign='left';
+  }
+}
+
+// ---------- 输入 & 循环 ----------
+cv.addEventListener('pointerdown',e=>{e.preventDefault();holding=true;act()});
+addEventListener('pointerup',()=>holding=false);
+addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();if(!e.repeat){holding=true;act()}}});
+addEventListener('keyup',e=>{if(e.code==='Space')holding=false});
+
+let last=performance.now();
+(function loop(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  update(dt);draw();requestAnimationFrame(loop);
+})(last);
+
+refreshUI();say('点击画面开始钓鱼！金币可解锁新的水域和装备');
+</script>
+</body>
+</html>
